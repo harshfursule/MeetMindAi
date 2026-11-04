@@ -157,28 +157,40 @@ const initializeSignaling = (io) => {
 
     /**
      * Handle simple-peer signal relay.
-     * This is the primary signaling mechanism used by the frontend (simple-peer).
-     * Broadcasts the signal data to all other peers in the room.
+     * Supports both directed 1-to-1 targeting (targetSocketId) for multi-participant mesh,
+     * and room-wide broadcast fallback.
      * @event signal
-     * @param {Object} data - { meetingId: string, signal: object }
+     * @param {Object} data - { meetingId: string, signal: object, targetSocketId?: string }
      */
     socket.on('signal', (data) => {
       try {
         const roomId = data.roomId || data.meetingId;
-        const { signal } = data;
+        const { signal, targetSocketId } = data;
 
         if (!roomId || !signal) {
           socket.emit('error', { message: 'Room ID and signal data are required.' });
           return;
         }
 
-        // Broadcast signal to all other users in the room
-        socket.to(roomId).emit('signal', {
-          signal,
-          userId: socket.userId,
-          userName: socket.userName,
-          socketId: socket.id,
-        });
+        if (targetSocketId) {
+          // Point-to-point signal targeted to a specific peer in the room
+          io.to(targetSocketId).emit('signal', {
+            signal,
+            senderSocketId: socket.id,
+            userId: socket.userId,
+            userName: socket.userName,
+            socketId: socket.id,
+          });
+        } else {
+          // Broadcast fallback (for legacy 1-to-1 calls)
+          socket.to(roomId).emit('signal', {
+            signal,
+            senderSocketId: socket.id,
+            userId: socket.userId,
+            userName: socket.userName,
+            socketId: socket.id,
+          });
+        }
       } catch (error) {
         console.error('[Socket] Error handling signal:', error.message);
         socket.emit('error', { message: 'Failed to relay signal.' });
