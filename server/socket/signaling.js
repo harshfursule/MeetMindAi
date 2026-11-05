@@ -1,16 +1,21 @@
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const User = require('../models/User');
+const Message = require('../models/Message');
 
 /**
- * Map of roomId -> Map of socketId -> { socketId, userId, userName, userRole }
- * Tracks which users are in which rooms for signaling.
+ * Map of roomId -> Map of socketId -> { socketId, userId, userName, userRole, audioEnabled, videoEnabled, handRaised }
+ * Tracks which users are in which rooms for signaling and controls.
  */
 const rooms = new Map();
 
 /**
  * Initialize Socket.io signaling server with JWT authentication.
- * Supports both simple-peer signaling (signal event) and raw WebRTC
- * (offer/answer/ice-candidate events).
+ * Supports:
+ * - Simple-peer signaling (targeted 1-to-1 mesh)
+ * - Raw WebRTC (offer/answer/ice-candidate)
+ * - Real-time in-meeting chat (group & private)
+ * - Participant controls (mute, mute-all, kick, hand raise, reactions)
  *
  * @param {import('socket.io').Server} io - The Socket.io server instance
  */
@@ -63,11 +68,11 @@ const initializeSignaling = (io) => {
 
     /**
      * Handle joining a room.
-     * Accepts both event names: 'join-room' and 'join-meeting' (frontend compatibility)
+     * Accepts both event names: 'join-room' and 'join-meeting'
      * @event join-room / join-meeting
-     * @param {Object} data - { roomId: string } or { meetingId: string }
+     * @param {Object} data - { roomId: string, audioEnabled?: boolean, videoEnabled?: boolean }
      */
-    const handleJoinRoom = (data) => {
+    const handleJoinRoom = async (data) => {
       try {
         const roomId = data.roomId || data.meetingId;
 
@@ -86,12 +91,16 @@ const initializeSignaling = (io) => {
         }
 
         const room = rooms.get(roomId);
-        room.set(socket.id, {
+        const participantData = {
           socketId: socket.id,
           userId: socket.userId,
           userName: socket.userName,
           userRole: socket.userRole,
-        });
+          audioEnabled: data.audioEnabled !== false,
+          videoEnabled: data.videoEnabled !== false,
+          handRaised: false,
+        };
+        room.set(socket.id, participantData);
 
         // Get list of existing participants in the room (excluding the new user)
         const existingParticipants = [];
@@ -101,11 +110,23 @@ const initializeSignaling = (io) => {
           }
         });
 
-        // Notify the joining user about existing participants
+        // Fetch recent messages for this room
+        let recentMessages = [];
+        try {
+          const query = mongoose.Types.ObjectId.isValid(roomId)
+            ? { $or: [{ meetingId: roomId }, { roomId }] }
+            : { roomId };
+          recentMessages = await Message.find(query).sort({ createdAt: 1 }).limit(100);
+        } catch (dbErr) {
+          console.warn('[Socket] Could not load message history:', dbErr.message);
+        }
+
+        // Notify the joining user about existing participants and message history
         socket.emit('room-joined', {
           roomId,
           participants: existingParticipants,
           participantCount: room.size,
+          messages: recentMessages,
         });
 
         // Send room-users count to all in room
@@ -113,10 +134,7 @@ const initializeSignaling = (io) => {
 
         // Notify everyone else in the room about the new user
         socket.to(roomId).emit('user-joined', {
-          socketId: socket.id,
-          userId: socket.userId,
-          userName: socket.userName,
-          userRole: socket.userRole,
+          ...participantData,
           participantCount: room.size,
         });
 
@@ -132,19 +150,15 @@ const initializeSignaling = (io) => {
 
     /**
      * Handle leaving a room.
-     * Accepts both event names: 'leave-room' and 'leave-meeting'
      * @event leave-room / leave-meeting
-     * @param {Object} data - { roomId: string } or { meetingId: string }
      */
     const handleLeaveRoomEvent = (data) => {
       try {
         const roomId = data.roomId || data.meetingId;
-
         if (!roomId) {
           socket.emit('error', { message: 'Room ID is required.' });
           return;
         }
-
         handleLeaveRoom(socket, roomId, io);
       } catch (error) {
         console.error('[Socket] Error leaving room:', error.message);
@@ -160,7 +174,6 @@ const initializeSignaling = (io) => {
      * Supports both directed 1-to-1 targeting (targetSocketId) for multi-participant mesh,
      * and room-wide broadcast fallback.
      * @event signal
-     * @param {Object} data - { meetingId: string, signal: object, targetSocketId?: string }
      */
     socket.on('signal', (data) => {
       try {
@@ -182,7 +195,7 @@ const initializeSignaling = (io) => {
             socketId: socket.id,
           });
         } else {
-          // Broadcast fallback (for legacy 1-to-1 calls)
+          // Broadcast fallback
           socket.to(roomId).emit('signal', {
             signal,
             senderSocketId: socket.id,
@@ -198,21 +211,229 @@ const initializeSignaling = (io) => {
     });
 
     /**
-     * Handle WebRTC offer (raw signaling, alternative to simple-peer).
-     * Forwards the SDP offer to the target peer in the room.
-     * @event offer
-     * @param {Object} data - { roomId: string, targetSocketId: string, sdp: RTCSessionDescription }
+     * Handle live in-meeting chat messages (group & private).
+     * @event send-message
+     */
+    socket.on('send-message', async (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const { text, isPrivate, targetSocketId, targetUserId, targetUserName } = data;
+
+        if (!roomId || !text || !text.trim()) {
+          return;
+        }
+
+        const cleanText = text.trim();
+        const messagePayload = {
+          _id: new mongoose.Types.ObjectId().toString(),
+          roomId,
+          senderId: socket.userId,
+          senderName: socket.userName,
+          senderSocketId: socket.id,
+          text: cleanText,
+          isPrivate: !!isPrivate,
+          targetSocketId: targetSocketId || null,
+          targetUserId: targetUserId || null,
+          targetUserName: targetUserName || null,
+          createdAt: new Date().toISOString(),
+        };
+
+        // Persist to MongoDB
+        try {
+          const meetingIdVal = mongoose.Types.ObjectId.isValid(roomId) ? roomId : null;
+          await Message.create({
+            meetingId: meetingIdVal,
+            roomId,
+            senderId: socket.userId,
+            senderName: socket.userName,
+            text: cleanText,
+            isPrivate: !!isPrivate,
+            targetUserId: targetUserId || null,
+            targetUserName: targetUserName || null,
+          });
+        } catch (dbErr) {
+          console.warn('[Socket] Could not persist message:', dbErr.message);
+        }
+
+        if (isPrivate && targetSocketId) {
+          // Private message: deliver to target peer and back to sender
+          io.to(targetSocketId).emit('new-message', messagePayload);
+          socket.emit('new-message', messagePayload);
+        } else {
+          // Group message: broadcast to all participants in room
+          io.to(roomId).emit('new-message', messagePayload);
+        }
+      } catch (error) {
+        console.error('[Socket] Error in send-message:', error);
+      }
+    });
+
+    /**
+     * Handle emoji reactions.
+     * @event send-reaction
+     */
+    socket.on('send-reaction', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const { emoji } = data;
+        if (!roomId || !emoji) return;
+
+        io.to(roomId).emit('reaction-received', {
+          id: `${socket.id}-${Date.now()}-${Math.random()}`,
+          emoji,
+          senderId: socket.userId,
+          senderName: socket.userName,
+          socketId: socket.id,
+          createdAt: Date.now(),
+        });
+      } catch (error) {
+        console.error('[Socket] Error in send-reaction:', error);
+      }
+    });
+
+    /**
+     * Handle raise / lower hand toggle.
+     * @event toggle-raise-hand
+     */
+    socket.on('toggle-raise-hand', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const isRaised = Boolean(data.isRaised);
+
+        const room = rooms.get(roomId);
+        if (room && room.has(socket.id)) {
+          room.get(socket.id).handRaised = isRaised;
+        }
+
+        io.to(roomId).emit('user-hand-toggled', {
+          socketId: socket.id,
+          userId: socket.userId,
+          userName: socket.userName,
+          isRaised,
+        });
+      } catch (error) {
+        console.error('[Socket] Error in toggle-raise-hand:', error);
+      }
+    });
+
+    /**
+     * Host lowers a participant's hand.
+     * @event lower-hand
+     */
+    socket.on('lower-hand', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const { targetSocketId } = data;
+        if (!roomId || !targetSocketId) return;
+
+        const room = rooms.get(roomId);
+        if (room && room.has(targetSocketId)) {
+          room.get(targetSocketId).handRaised = false;
+        }
+
+        io.to(roomId).emit('user-hand-toggled', {
+          socketId: targetSocketId,
+          isRaised: false,
+        });
+
+        io.to(targetSocketId).emit('force-lower-hand');
+      } catch (error) {
+        console.error('[Socket] Error in lower-hand:', error);
+      }
+    });
+
+    /**
+     * Handle participant audio/video state changes.
+     * @event media-state-change
+     */
+    socket.on('media-state-change', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const { audioEnabled, videoEnabled } = data;
+
+        const room = rooms.get(roomId);
+        if (room && room.has(socket.id)) {
+          const participant = room.get(socket.id);
+          if (audioEnabled !== undefined) participant.audioEnabled = audioEnabled;
+          if (videoEnabled !== undefined) participant.videoEnabled = videoEnabled;
+        }
+
+        socket.to(roomId).emit('user-media-state-changed', {
+          socketId: socket.id,
+          userId: socket.userId,
+          audioEnabled,
+          videoEnabled,
+        });
+      } catch (error) {
+        console.error('[Socket] Error in media-state-change:', error);
+      }
+    });
+
+    /**
+     * Host mutes a specific participant.
+     * @event mute-participant
+     */
+    socket.on('mute-participant', (data) => {
+      try {
+        const { targetSocketId } = data;
+        if (!targetSocketId) return;
+
+        io.to(targetSocketId).emit('force-mute', {
+          mutedBy: socket.userName,
+        });
+      } catch (error) {
+        console.error('[Socket] Error in mute-participant:', error);
+      }
+    });
+
+    /**
+     * Host mutes all participants.
+     * @event mute-all
+     */
+    socket.on('mute-all', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        if (!roomId) return;
+
+        socket.to(roomId).emit('force-mute', {
+          mutedBy: socket.userName,
+        });
+      } catch (error) {
+        console.error('[Socket] Error in mute-all:', error);
+      }
+    });
+
+    /**
+     * Host removes / kicks a participant from the meeting.
+     * @event kick-participant
+     */
+    socket.on('kick-participant', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const { targetSocketId } = data;
+        if (!roomId || !targetSocketId) return;
+
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        if (targetSocket) {
+          targetSocket.emit('kicked-from-meeting', {
+            kickedBy: socket.userName,
+            reason: 'You have been removed from the meeting by the host.',
+          });
+          handleLeaveRoom(targetSocket, roomId, io);
+        }
+      } catch (error) {
+        console.error('[Socket] Error in kick-participant:', error);
+      }
+    });
+
+    /**
+     * Handle WebRTC offer (raw fallback)
      */
     socket.on('offer', (data) => {
       try {
         const { roomId, targetSocketId, sdp } = data;
+        if (!roomId || !targetSocketId || !sdp) return;
 
-        if (!roomId || !targetSocketId || !sdp) {
-          socket.emit('error', { message: 'Room ID, target socket ID, and SDP are required for offer.' });
-          return;
-        }
-
-        // Forward offer to the specific target peer
         io.to(targetSocketId).emit('offer', {
           roomId,
           sdp,
@@ -220,30 +441,19 @@ const initializeSignaling = (io) => {
           senderUserId: socket.userId,
           senderUserName: socket.userName,
         });
-
-        console.log(`[Socket] Offer from ${socket.userName} (${socket.id}) to ${targetSocketId} in room ${roomId}`);
       } catch (error) {
         console.error('[Socket] Error handling offer:', error.message);
-        socket.emit('error', { message: 'Failed to send offer.' });
       }
     });
 
     /**
-     * Handle WebRTC answer (raw signaling, alternative to simple-peer).
-     * Forwards the SDP answer to the target peer.
-     * @event answer
-     * @param {Object} data - { roomId: string, targetSocketId: string, sdp: RTCSessionDescription }
+     * Handle WebRTC answer (raw fallback)
      */
     socket.on('answer', (data) => {
       try {
         const { roomId, targetSocketId, sdp } = data;
+        if (!roomId || !targetSocketId || !sdp) return;
 
-        if (!roomId || !targetSocketId || !sdp) {
-          socket.emit('error', { message: 'Room ID, target socket ID, and SDP are required for answer.' });
-          return;
-        }
-
-        // Forward answer to the specific target peer
         io.to(targetSocketId).emit('answer', {
           roomId,
           sdp,
@@ -251,30 +461,19 @@ const initializeSignaling = (io) => {
           senderUserId: socket.userId,
           senderUserName: socket.userName,
         });
-
-        console.log(`[Socket] Answer from ${socket.userName} (${socket.id}) to ${targetSocketId} in room ${roomId}`);
       } catch (error) {
         console.error('[Socket] Error handling answer:', error.message);
-        socket.emit('error', { message: 'Failed to send answer.' });
       }
     });
 
     /**
-     * Handle ICE candidate exchange (raw signaling, alternative to simple-peer).
-     * Forwards ICE candidates to the target peer.
-     * @event ice-candidate
-     * @param {Object} data - { roomId: string, targetSocketId: string, candidate: RTCIceCandidate }
+     * Handle ICE candidate
      */
     socket.on('ice-candidate', (data) => {
       try {
         const { roomId, targetSocketId, candidate } = data;
+        if (!roomId || !targetSocketId || !candidate) return;
 
-        if (!roomId || !targetSocketId || !candidate) {
-          socket.emit('error', { message: 'Room ID, target socket ID, and candidate are required.' });
-          return;
-        }
-
-        // Forward ICE candidate to the specific target peer
         io.to(targetSocketId).emit('ice-candidate', {
           roomId,
           candidate,
@@ -283,23 +482,19 @@ const initializeSignaling = (io) => {
         });
       } catch (error) {
         console.error('[Socket] Error handling ICE candidate:', error.message);
-        socket.emit('error', { message: 'Failed to send ICE candidate.' });
       }
     });
 
     /**
      * Handle disconnection.
-     * Clean up user from all rooms they were in.
      */
     socket.on('disconnect', (reason) => {
       console.log(`[Socket] User disconnected: ${socket.userName} (${socket.userId}) - Reason: ${reason}`);
 
-      // Clean up from all rooms
       if (socket.currentRoom) {
         handleLeaveRoom(socket, socket.currentRoom, io);
       }
 
-      // Fallback: Check all rooms for this socket
       rooms.forEach((room, roomId) => {
         if (room.has(socket.id)) {
           handleLeaveRoom(socket, roomId, io);
@@ -307,23 +502,16 @@ const initializeSignaling = (io) => {
       });
     });
 
-    /**
-     * Handle generic errors.
-     */
     socket.on('error', (error) => {
       console.error(`[Socket] Socket error for ${socket.userName}:`, error);
     });
   });
 
-  console.log('[Socket] Signaling server initialized.');
+  console.log('[Socket] Signaling server initialized with chat & participant controls.');
 };
 
 /**
  * Handle a user leaving a room. Cleans up tracking data and notifies other participants.
- *
- * @param {import('socket.io').Socket} socket - The socket instance
- * @param {string} roomId - The room to leave
- * @param {import('socket.io').Server} io - The Socket.io server instance
  */
 function handleLeaveRoom(socket, roomId, io) {
   socket.leave(roomId);
@@ -332,7 +520,6 @@ function handleLeaveRoom(socket, roomId, io) {
   if (room) {
     room.delete(socket.id);
 
-    // Notify remaining participants
     socket.to(roomId).emit('user-left', {
       socketId: socket.id,
       userId: socket.userId,
@@ -340,12 +527,10 @@ function handleLeaveRoom(socket, roomId, io) {
       participantCount: room.size,
     });
 
-    // Send updated room-users count
     io.to(roomId).emit('room-users', { count: room.size });
 
     console.log(`[Socket] ${socket.userName} left room ${roomId} (${room.size} users remaining)`);
 
-    // Clean up empty rooms
     if (room.size === 0) {
       rooms.delete(roomId);
       console.log(`[Socket] Room ${roomId} is now empty and has been removed.`);

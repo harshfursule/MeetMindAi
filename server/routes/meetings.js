@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const Meeting = require('../models/Meeting');
+const Message = require('../models/Message');
 const auth = require('../middleware/auth');
 const roleCheck = require('../middleware/roleCheck');
 
@@ -442,6 +443,42 @@ router.post('/:id/leave', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Internal server error while leaving meeting.',
+    });
+  }
+});
+
+/**
+ * @route   GET /api/meetings/:id/messages
+ * @desc    Get chat messages for a meeting
+ * @access  Private
+ */
+router.get('/:id/messages', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let query = { roomId: id };
+    if (mongoose.Types.ObjectId.isValid(id)) {
+      query = { $or: [{ meetingId: id }, { roomId: id }] };
+    }
+
+    const messages = await Message.find(query).sort('createdAt').limit(200);
+
+    const filtered = messages.filter((m) => {
+      if (!m.isPrivate) return true;
+      return (
+        m.senderId.toString() === req.userId.toString() ||
+        (m.targetUserId && m.targetUserId.toString() === req.userId.toString())
+      );
+    });
+
+    res.status(200).json({
+      success: true,
+      data: { messages: filtered },
+    });
+  } catch (error) {
+    console.error('Get messages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error while fetching messages.',
     });
   }
 });

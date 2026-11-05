@@ -42,3 +42,27 @@ button, a, input {
   backdrop-filter: blur(16px);
   border: 1px solid rgba(99, 102, 241, 0.15);
 }
+
+/* Floating Emoji Reaction Animation */
+@keyframes reaction {
+  0% {
+    opacity: 0;
+    transform: translateY(0) scale(0.6);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(-20px) scale(1.2);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-160px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-240px) scale(0.8);
+  }
+}
+
+.animate-reaction {
+  animation: reaction 2.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
