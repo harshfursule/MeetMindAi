@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Message = require('../models/Message');
+const { getIceServers } = require('../routes/webrtc');
 
 /**
  * Map of roomId -> Map of socketId -> { socketId, userId, userName, userRole, audioEnabled, videoEnabled, handRaised }
@@ -134,6 +135,7 @@ const initializeSignaling = (io) => {
           participantCount: room.size,
           messages: recentMessages,
           currentPresenter: roomPresenters.get(roomId) || null,
+          iceServers: getIceServers(socket.userId),
         });
 
         // Send room-users count to all in room

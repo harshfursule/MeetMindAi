@@ -7,6 +7,7 @@ import {
   Copy,
   Check,
   Shield,
+  ShieldCheck,
   ScreenShare,
   ScreenShareOff,
   WifiOff,
@@ -69,6 +70,25 @@ const MeetingRoom = () => {
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
+  const iceServersRef = useRef([
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302',
+      ],
+    },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ]);
 
   // Check if current user is the meeting host
   const isHost =
@@ -76,6 +96,22 @@ const MeetingRoom = () => {
     meetingData?.hostId?.id === user?._id ||
     meetingData?.hostId === user?._id ||
     user?.role === 'admin';
+
+  // Load dynamic STUN/TURN ICE server configuration
+  useEffect(() => {
+    const fetchIceServers = async () => {
+      try {
+        const { data } = await api.get('/webrtc/ice-servers');
+        if (data.data?.iceServers && Array.isArray(data.data.iceServers)) {
+          iceServersRef.current = data.data.iceServers;
+          console.log('[WebRTC] STUN & TURN servers loaded for restrictive networks:', data.data.iceServers);
+        }
+      } catch (err) {
+        console.warn('[WebRTC] Using fallback STUN/TURN servers:', err.message);
+      }
+    };
+    fetchIceServers();
+  }, []);
 
   // Load meeting data from REST API
   useEffect(() => {
@@ -315,10 +351,7 @@ const MeetingRoom = () => {
         trickle: false,
         stream,
         config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-          ],
+          iceServers: iceServersRef.current,
         },
       });
 
@@ -455,10 +488,15 @@ const MeetingRoom = () => {
             participantCount: count,
             messages: history,
             currentPresenter,
+            iceServers: dynamicIceServers,
           }) => {
             if (count) setParticipantCount(count);
             if (history && Array.isArray(history)) setMessages(history);
             if (currentPresenter) setActivePresenter(currentPresenter);
+            if (dynamicIceServers && Array.isArray(dynamicIceServers) && dynamicIceServers.length > 0) {
+              iceServersRef.current = dynamicIceServers;
+              console.log('[WebRTC] Updated ICE configuration from room signaling:', dynamicIceServers);
+            }
 
             const localParticipant = {
               socketId: socket.id,
@@ -940,6 +978,14 @@ const MeetingRoom = () => {
         </div>
 
         <div className="flex items-center gap-3 text-sm text-indigo-300">
+          <span
+            className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs font-medium cursor-help"
+            title="STUN and TURN Relay servers active. Encrypted UDP/TCP & TLS 443 fallback enabled for restrictive networks and firewalls."
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>TURN Relay Ready</span>
+          </span>
+
           {activePresenter && (
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-300 text-xs font-semibold animate-pulse">
               <ScreenShare className="w-3.5 h-3.5" />

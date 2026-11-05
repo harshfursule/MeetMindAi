@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  coturn:
+    image: coturn/coturn:latest
+    container_name: meetmind-coturn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    # For production: mount SSL certificates for TLS port 443
+    # - ./certs:/etc/coturn/certs:ro
+    command:
+      - "-c"
+      - "/etc/coturn/turnserver.conf"

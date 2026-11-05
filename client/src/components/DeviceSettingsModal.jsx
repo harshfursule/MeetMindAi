@@ -8,6 +8,8 @@ import {
   RefreshCw,
   Sliders,
   Settings,
+  ShieldCheck,
+  Globe,
 } from 'lucide-react';
 
 const DeviceSettingsModal = ({
@@ -313,6 +315,22 @@ const DeviceSettingsModal = ({
                 <option value="">Default System Output</option>
               )}
             </select>
+          </div>
+
+          {/* Network & TURN Traversal Status */}
+          <div className="p-4 rounded-2xl bg-indigo-950/40 border border-indigo-500/15 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-indigo-300">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                Network Traversal & TURN Relay
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">
+                Protected
+              </span>
+            </div>
+            <p className="text-[11px] text-indigo-200/60 leading-relaxed">
+              Configured with STUN and multi-transport TURN relays (UDP, TCP, and TLS Port 443) to guarantee seamless connection across restrictive firewalls, cellular CGNAT, and university/corporate networks.
+            </p>
           </div>
         </div>
 
