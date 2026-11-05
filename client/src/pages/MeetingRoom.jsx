@@ -9,10 +9,14 @@ import {
   Shield,
   ScreenShare,
   ScreenShareOff,
+  WifiOff,
+  RotateCcw,
+  Sliders,
 } from 'lucide-react';
 import VideoPlayer from '../components/VideoPlayer.jsx';
 import ControlBar from '../components/ControlBar.jsx';
 import MeetingSidebar from '../components/MeetingSidebar.jsx';
+import DeviceSettingsModal from '../components/DeviceSettingsModal.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getSocket } from '../services/socket.js';
 import api from '../services/api.js';
@@ -31,6 +35,16 @@ const MeetingRoom = () => {
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [handRaised, setHandRaised] = useState(false);
 
+  // Device Selection
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [currentAudioDeviceId, setCurrentAudioDeviceId] = useState('');
+  const [currentVideoDeviceId, setCurrentVideoDeviceId] = useState('');
+  const [currentAudioOutputId, setCurrentAudioOutputId] = useState('');
+
+  // Connection & Reconnection state
+  const [connectionStatus, setConnectionStatus] = useState('connected'); // 'connected' | 'reconnecting' | 'disconnected'
+  const [reconnectCount, setReconnectCount] = useState(0);
+
   // Screen sharing & Presenter state
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [activePresenter, setActivePresenter] = useState(null); // { presenterSocketId, presenterName, presenterUserId } | null
@@ -38,7 +52,7 @@ const MeetingRoom = () => {
 
   // Room & participants
   const [meetingData, setMeetingData] = useState(null);
-  const [participantsList, setParticipantsList] = useState([]); // list of all participants for sidebar
+  const [participantsList, setParticipantsList] = useState([]);
   const [participantCount, setParticipantCount] = useState(1);
   const [copied, setCopied] = useState(false);
 
@@ -94,13 +108,11 @@ const MeetingRoom = () => {
 
   // Full cleanup
   const cleanup = useCallback(() => {
-    // Stop screen sharing if active
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((track) => track.stop());
       screenStreamRef.current = null;
     }
 
-    // Destroy all peer connections
     Object.keys(peersRef.current).forEach((socketId) => {
       try {
         peersRef.current[socketId].peer.destroy();
@@ -118,6 +130,8 @@ const MeetingRoom = () => {
 
     if (socketRef.current) {
       socketRef.current.emit('leave-meeting', { meetingId });
+      socketRef.current.off('connect');
+      socketRef.current.off('disconnect');
       socketRef.current.off('room-joined');
       socketRef.current.off('user-joined');
       socketRef.current.off('user-left');
@@ -147,7 +161,6 @@ const MeetingRoom = () => {
       screenStreamRef.current = null;
     }
 
-    // Revert WebRTC video track back to camera for all peers
     const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
     if (cameraTrack) {
       Object.values(peersRef.current).forEach(({ peer }) => {
@@ -168,10 +181,9 @@ const MeetingRoom = () => {
     toast.success('Screen sharing stopped');
   }, [meetingId]);
 
-  // Start Screen Share / Presenter Switching
+  // Start Screen Share helper
   const startScreenShare = useCallback(async () => {
     try {
-      // 1. Request display media from browser
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: { cursor: 'always' },
         audio: true,
@@ -180,12 +192,10 @@ const MeetingRoom = () => {
       const screenVideoTrack = screenStream.getVideoTracks()[0];
       const cameraVideoTrack = localStreamRef.current?.getVideoTracks()[0];
 
-      // Handle user stopping share via native browser floating banner
       screenVideoTrack.onended = () => {
         stopScreenShare();
       };
 
-      // 2. Replace camera video track with screen track across all peers
       if (cameraVideoTrack) {
         Object.values(peersRef.current).forEach(({ peer }) => {
           try {
@@ -200,7 +210,6 @@ const MeetingRoom = () => {
       setLocalScreenStream(screenStream);
       setIsScreenSharing(true);
 
-      // 3. Emit presenter start / switch event to room
       socketRef.current?.emit('start-screen-share', { meetingId });
       toast.success('You are now sharing your screen');
     } catch (err) {
@@ -217,6 +226,84 @@ const MeetingRoom = () => {
       stopScreenShare();
     } else {
       startScreenShare();
+    }
+  };
+
+  // Device Switching: Camera, Microphone, and Audio Output
+  const handleDeviceChange = async ({ audioDeviceId, videoDeviceId, audioOutputId }) => {
+    try {
+      // 1. Switch Video Camera Track if changed
+      if (videoDeviceId && videoDeviceId !== currentVideoDeviceId) {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: videoDeviceId } },
+        });
+        const newVideoTrack = newStream.getVideoTracks()[0];
+        const oldVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+
+        newVideoTrack.enabled = videoEnabled; // preserve camera on/off state
+
+        // Replace track across all mesh peers
+        if (oldVideoTrack) {
+          Object.values(peersRef.current).forEach(({ peer }) => {
+            try {
+              peer.replaceTrack(oldVideoTrack, newVideoTrack, localStreamRef.current);
+            } catch (err) {
+              console.error('[DeviceSwitch] replaceTrack video error:', err);
+            }
+          });
+          oldVideoTrack.stop();
+          localStreamRef.current.removeTrack(oldVideoTrack);
+        }
+
+        localStreamRef.current.addTrack(newVideoTrack);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+        setCurrentVideoDeviceId(videoDeviceId);
+        toast.success('Camera updated');
+      }
+
+      // 2. Switch Microphone Track if changed
+      if (audioDeviceId && audioDeviceId !== currentAudioDeviceId) {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: audioDeviceId } },
+        });
+        const newAudioTrack = newStream.getAudioTracks()[0];
+        const oldAudioTrack = localStreamRef.current?.getAudioTracks()[0];
+
+        newAudioTrack.enabled = audioEnabled; // preserve mute state
+
+        // Replace track across all mesh peers
+        if (oldAudioTrack) {
+          Object.values(peersRef.current).forEach(({ peer }) => {
+            try {
+              peer.replaceTrack(oldAudioTrack, newAudioTrack, localStreamRef.current);
+            } catch (err) {
+              console.error('[DeviceSwitch] replaceTrack audio error:', err);
+            }
+          });
+          oldAudioTrack.stop();
+          localStreamRef.current.removeTrack(oldAudioTrack);
+        }
+
+        localStreamRef.current.addTrack(newAudioTrack);
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+        setCurrentAudioDeviceId(audioDeviceId);
+        toast.success('Microphone updated');
+      }
+
+      // 3. Switch Speaker / Output Sink
+      if (audioOutputId && audioOutputId !== currentAudioOutputId) {
+        const videoElements = document.querySelectorAll('video');
+        videoElements.forEach((video) => {
+          if (typeof video.setSinkId === 'function') {
+            video.setSinkId(audioOutputId).catch(console.warn);
+          }
+        });
+        setCurrentAudioOutputId(audioOutputId);
+        toast.success('Audio output device updated');
+      }
+    } catch (err) {
+      console.error('[DeviceSwitch] Error switching devices:', err);
+      toast.error('Could not switch to selected device');
     }
   };
 
@@ -266,11 +353,10 @@ const MeetingRoom = () => {
       });
 
       peer.on('error', (err) => {
-        console.error(`[Peer ${targetSocketId}] Error:`, err);
+        console.warn(`[Peer ${targetSocketId}] Error:`, err);
       });
 
       peer.on('close', () => {
-        console.log(`[Peer ${targetSocketId}] Closed`);
         removePeer(targetSocketId);
       });
 
@@ -279,13 +365,40 @@ const MeetingRoom = () => {
     [meetingId, removePeer]
   );
 
-  // Initialize media, socket, chat, and participant controls
+  // Manual Reconnect Action
+  const handleManualReconnect = useCallback(() => {
+    setConnectionStatus('reconnecting');
+    toast.loading('Reconnecting to meeting...', { id: 'reconnect-toast' });
+
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current.connect();
+    }
+
+    setTimeout(() => {
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('join-meeting', {
+          meetingId,
+          userId: user?._id || user?.id,
+          userName: user?.name || 'Guest',
+          audioEnabled,
+          videoEnabled,
+        });
+        setConnectionStatus('connected');
+        toast.success('Reconnected successfully!', { id: 'reconnect-toast' });
+      } else {
+        toast.error('Reconnection failed. Please check network.', { id: 'reconnect-toast' });
+      }
+    }, 1500);
+  }, [meetingId, user, audioEnabled, videoEnabled]);
+
+  // Main lifecycle: media, socket, chat, participant controls, reconnection
   useEffect(() => {
     let mounted = true;
 
     const init = async () => {
       try {
-        // 1. Get user media
+        // 1. Get initial media devices
         const stream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: true,
@@ -299,9 +412,31 @@ const MeetingRoom = () => {
         localStreamRef.current = stream;
         setLocalStream(stream);
 
+        // Store active device IDs
+        const vTrack = stream.getVideoTracks()[0];
+        const aTrack = stream.getAudioTracks()[0];
+        if (vTrack?.getSettings()?.deviceId) {
+          setCurrentVideoDeviceId(vTrack.getSettings().deviceId);
+        }
+        if (aTrack?.getSettings()?.deviceId) {
+          setCurrentAudioDeviceId(aTrack.getSettings().deviceId);
+        }
+
         // 2. Connect socket
         const socket = getSocket();
         socketRef.current = socket;
+
+        // Connection & Reconnection listeners
+        socket.on('connect', () => {
+          setConnectionStatus('connected');
+          setReconnectCount(0);
+        });
+
+        socket.on('disconnect', (reason) => {
+          console.warn('[Socket] Disconnected:', reason);
+          setConnectionStatus('reconnecting');
+          setReconnectCount((c) => c + 1);
+        });
 
         // 3. Join meeting room
         socket.emit('join-meeting', {
@@ -312,7 +447,7 @@ const MeetingRoom = () => {
           videoEnabled: true,
         });
 
-        // 4. Handle room-joined (existing participants + message history + presenter)
+        // 4. Handle room-joined
         socket.on(
           'room-joined',
           ({
@@ -321,18 +456,10 @@ const MeetingRoom = () => {
             messages: history,
             currentPresenter,
           }) => {
-            console.log('[Socket] Room joined. Existing participants:', participants);
             if (count) setParticipantCount(count);
+            if (history && Array.isArray(history)) setMessages(history);
+            if (currentPresenter) setActivePresenter(currentPresenter);
 
-            if (history && Array.isArray(history)) {
-              setMessages(history);
-            }
-
-            if (currentPresenter) {
-              setActivePresenter(currentPresenter);
-            }
-
-            // Build participants list (including local user)
             const localParticipant = {
               socketId: socket.id,
               userId: user?._id || user?.id,
@@ -353,7 +480,6 @@ const MeetingRoom = () => {
 
             setParticipantsList([localParticipant, ...remoteParticipants]);
 
-            // Create peer connections to each existing participant
             participants.forEach((p) => {
               const peer = createPeer(p.socketId, true, stream, p.userName);
               peersRef.current[p.socketId] = {
@@ -364,7 +490,7 @@ const MeetingRoom = () => {
           }
         );
 
-        // 5. When a new user joins later
+        // 5. New user joined
         socket.on('user-joined', (participant) => {
           toast.success(`${participant.userName || 'Someone'} joined the meeting`);
           if (participant.participantCount) {
@@ -385,7 +511,7 @@ const MeetingRoom = () => {
           });
         });
 
-        // 6. WebRTC Signal Relay
+        // 6. Signal Relay
         socket.on('signal', ({ signal, senderSocketId, userName, socketId }) => {
           const peerId = senderSocketId || socketId;
           if (!peerId) return;
@@ -402,7 +528,7 @@ const MeetingRoom = () => {
           }
         });
 
-        // 7. When a participant leaves
+        // 7. User left
         socket.on('user-left', ({ socketId, userName, participantCount: count }) => {
           toast(`${userName || 'Someone'} left the meeting`, { icon: '👋' });
           removePeer(socketId);
@@ -414,11 +540,9 @@ const MeetingRoom = () => {
           setParticipantCount(count);
         });
 
-        // 9. Live in-meeting chat messages
+        // 9. Live chat messages
         socket.on('new-message', (msg) => {
           setMessages((prev) => [...prev, msg]);
-
-          // Increment unread badge if chat panel is not open
           setActiveSidebar((currentSidebar) => {
             if (currentSidebar !== 'chat') {
               setUnreadCount((c) => c + 1);
@@ -427,11 +551,10 @@ const MeetingRoom = () => {
           });
         });
 
-        // 10. Floating emoji reactions
+        // 10. Floating reactions
         socket.on('reaction-received', (reaction) => {
-          const randomX = Math.floor(Math.random() * 60) + 20; // 20% to 80% screen width
+          const randomX = Math.floor(Math.random() * 60) + 20;
           const newReaction = { ...reaction, x: randomX };
-
           setFloatingReactions((prev) => [...prev, newReaction]);
 
           setTimeout(() => {
@@ -439,11 +562,9 @@ const MeetingRoom = () => {
           }, 3000);
         });
 
-        // 11. Raise / lower hand event
+        // 11. Raise hand
         socket.on('user-hand-toggled', ({ socketId, userName, isRaised }) => {
-          if (socketId === socket.id) {
-            setHandRaised(isRaised);
-          }
+          if (socketId === socket.id) setHandRaised(isRaised);
 
           setPeers((prev) =>
             prev.map((p) => (p.peerId === socketId ? { ...p, handRaised: isRaised } : p))
@@ -454,20 +575,17 @@ const MeetingRoom = () => {
           );
 
           if (isRaised) {
-            toast(`${userName || 'Someone'} raised their hand ✋`, {
-              icon: '✋',
-              duration: 3000,
-            });
+            toast(`${userName || 'Someone'} raised their hand ✋`, { icon: '✋' });
           }
         });
 
-        // 12. Host lowered our hand
+        // 12. Force lower hand
         socket.on('force-lower-hand', () => {
           setHandRaised(false);
           toast('Your hand was lowered by the host.', { icon: 'ℹ️' });
         });
 
-        // 13. Participant media state changes (mic/camera toggle)
+        // 13. Media state changed
         socket.on('user-media-state-changed', ({ socketId, audioEnabled: a, videoEnabled: v }) => {
           setPeers((prev) =>
             prev.map((p) => {
@@ -496,36 +614,31 @@ const MeetingRoom = () => {
           );
         });
 
-        // 14. Host muted us
+        // 14. Force mute
         socket.on('force-mute', ({ mutedBy }) => {
           if (localStreamRef.current) {
             const track = localStreamRef.current.getAudioTracks()[0];
-            if (track) {
-              track.enabled = false;
-            }
+            if (track) track.enabled = false;
           }
           setAudioEnabled(false);
           socket.emit('media-state-change', {
             meetingId,
             audioEnabled: false,
           });
-
           toast.error(`You were muted by ${mutedBy || 'the host'}.`);
         });
 
-        // 15. Host kicked us from meeting
+        // 15. Kicked
         socket.on('kicked-from-meeting', ({ reason }) => {
           toast.error(reason || 'You have been removed from the meeting by the host.');
           cleanup();
           navigate('/dashboard');
         });
 
-        // 16. Screen Share / Presenter Switched
+        // 16. Presenter changed
         socket.on('presenter-changed', (presenterInfo) => {
-          console.log('[Socket] Presenter changed:', presenterInfo);
           setActivePresenter(presenterInfo);
 
-          // If another participant took over presenter while we were sharing, stop our share
           if (
             screenStreamRef.current &&
             presenterInfo.presenterSocketId !== socket.id
@@ -535,7 +648,6 @@ const MeetingRoom = () => {
             setLocalScreenStream(null);
             setIsScreenSharing(false);
 
-            // Revert track
             const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
             if (cameraTrack) {
               Object.values(peersRef.current).forEach(({ peer }) => {
@@ -550,19 +662,14 @@ const MeetingRoom = () => {
               });
             }
 
-            toast(`${presenterInfo.presenterName} took over screen sharing`, {
-              icon: '🖥️',
-            });
+            toast(`${presenterInfo.presenterName} took over screen sharing`, { icon: '🖥️' });
           } else if (presenterInfo.presenterSocketId !== socket.id) {
-            toast(`${presenterInfo.presenterName} is sharing their screen`, {
-              icon: '🖥️',
-            });
+            toast(`${presenterInfo.presenterName} is sharing their screen`, { icon: '🖥️' });
           }
         });
 
-        // 17. Presenter Stopped
-        socket.on('presenter-stopped', ({ presenterName }) => {
-          console.log('[Socket] Presenter stopped:', presenterName);
+        // 17. Presenter stopped
+        socket.on('presenter-stopped', () => {
           setActivePresenter(null);
         });
       } catch (err) {
@@ -600,6 +707,10 @@ const MeetingRoom = () => {
         setParticipantsList((prev) =>
           prev.map((p) => (p.isLocal ? { ...p, audioEnabled: newState } : p))
         );
+
+        toast(newState ? 'Microphone unmuted' : 'Microphone muted', {
+          icon: newState ? '🎙️' : '🔇',
+        });
       }
     }
   };
@@ -621,9 +732,43 @@ const MeetingRoom = () => {
         setParticipantsList((prev) =>
           prev.map((p) => (p.isLocal ? { ...p, videoEnabled: newState } : p))
         );
+
+        toast(newState ? 'Camera turned on' : 'Camera turned off', {
+          icon: newState ? '📹' : '🚫',
+        });
       }
     }
   };
+
+  // Keyboard Shortcuts: M (Mute), V (Video), H (Hand), C (Chat), P (Participants)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts if user is typing in an input or textarea
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) {
+        return;
+      }
+
+      if (e.key === 'm' || e.key === 'M') {
+        e.preventDefault();
+        handleToggleAudio();
+      } else if (e.key === 'v' || e.key === 'V') {
+        e.preventDefault();
+        handleToggleVideo();
+      } else if (e.key === 'h' || e.key === 'H') {
+        e.preventDefault();
+        handleToggleHand();
+      } else if (e.key === 'c' || e.key === 'C') {
+        e.preventDefault();
+        handleToggleSidebar('chat');
+      } else if (e.key === 'p' || e.key === 'P') {
+        e.preventDefault();
+        handleToggleSidebar('participants');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [audioEnabled, videoEnabled, handRaised]);
 
   // Raise / Lower Hand toggle
   const handleToggleHand = () => {
@@ -662,35 +807,25 @@ const MeetingRoom = () => {
 
   // Host: Mute single participant
   const handleMuteParticipant = (targetSocketId) => {
-    socketRef.current?.emit('mute-participant', {
-      targetSocketId,
-    });
+    socketRef.current?.emit('mute-participant', { targetSocketId });
     toast.success('Mute command sent');
   };
 
-  // Host: Mute all participants
+  // Host: Mute all
   const handleMuteAll = () => {
-    socketRef.current?.emit('mute-all', {
-      meetingId,
-    });
+    socketRef.current?.emit('mute-all', { meetingId });
     toast.success('Muted all participants');
   };
 
   // Host: Kick participant
   const handleKickParticipant = (targetSocketId) => {
-    socketRef.current?.emit('kick-participant', {
-      meetingId,
-      targetSocketId,
-    });
+    socketRef.current?.emit('kick-participant', { meetingId, targetSocketId });
     toast.success('Participant removed');
   };
 
   // Host: Lower participant hand
   const handleLowerHand = (targetSocketId) => {
-    socketRef.current?.emit('lower-hand', {
-      meetingId,
-      targetSocketId,
-    });
+    socketRef.current?.emit('lower-hand', { meetingId, targetSocketId });
   };
 
   // Toggle sidebar panel
@@ -720,7 +855,7 @@ const MeetingRoom = () => {
     navigate('/dashboard');
   };
 
-  // Find the presenter's stream
+  // Presenter stream lookup
   const isLocalPresenter =
     isScreenSharing ||
     (activePresenter && activePresenter.presenterSocketId === socketRef.current?.id);
@@ -733,7 +868,6 @@ const MeetingRoom = () => {
     ? localScreenStream || localStream
     : presenterPeer?.stream;
 
-  // Determine standard grid columns when no screen is being shared
   const totalStreams = peers.length + 1;
   const getGridClass = () => {
     if (totalStreams === 1) return 'grid-cols-1 max-w-4xl mx-auto';
@@ -760,6 +894,25 @@ const MeetingRoom = () => {
           </div>
         ))}
       </div>
+
+      {/* Top Network Reconnection Banner (if connection issue) */}
+      {connectionStatus !== 'connected' && (
+        <div className="bg-yellow-600/90 text-white px-4 py-2 flex items-center justify-between text-xs font-medium z-30 shadow-md">
+          <div className="flex items-center gap-2">
+            <WifiOff className="w-4 h-4 animate-bounce" />
+            <span>
+              Connection lost. Attempting to reconnect (Attempt {reconnectCount})...
+            </span>
+          </div>
+          <button
+            onClick={handleManualReconnect}
+            className="flex items-center gap-1 px-3 py-1 bg-black/40 hover:bg-black/60 rounded-lg text-white font-semibold transition-all cursor-pointer"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Reconnect Now</span>
+          </button>
+        </div>
+      )}
 
       {/* Top Navigation Bar */}
       <header className="flex items-center justify-between px-6 py-3 glass z-10 border-b border-indigo-500/10">
@@ -811,15 +964,12 @@ const MeetingRoom = () => {
         </div>
       </header>
 
-      {/* Main Stage (Screen Share Spotlight View OR Standard Responsive Grid) */}
+      {/* Main Stage (Screen Share Hero Spotlight View OR Responsive Grid) */}
       <div className="flex-1 flex overflow-hidden relative">
         <main className="flex-1 p-3 md:p-5 overflow-y-auto flex flex-col justify-center">
           {activePresenter && presenterStream ? (
-            /* ========================================================= */
-            /* OPTIMIZED SCREEN SHARING HERO VIEW WITH FILMSTRIP (MODULE 5) */
-            /* ========================================================= */
+            /* Screen Sharing Hero View with Filmstrip */
             <div className="h-full flex flex-col gap-3">
-              {/* Primary Screen Share Stage (Hero) */}
               <div className="flex-1 relative rounded-2xl overflow-hidden bg-black/90 border border-blue-500/30 shadow-2xl flex items-center justify-center group min-h-[350px]">
                 <video
                   autoPlay
@@ -833,7 +983,6 @@ const MeetingRoom = () => {
                   className="w-full h-full object-contain"
                 />
 
-                {/* Presenter Banner Overlay */}
                 <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-950/80 backdrop-blur-md border border-white/10 text-xs font-medium text-white shadow-lg">
                   <ScreenShare className="w-4 h-4 text-blue-400" />
                   <span>
@@ -842,7 +991,6 @@ const MeetingRoom = () => {
                   <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse ml-1" />
                 </div>
 
-                {/* Quick Stop Sharing Button for Local Presenter */}
                 {isLocalPresenter && (
                   <button
                     onClick={stopScreenShare}
@@ -854,9 +1002,8 @@ const MeetingRoom = () => {
                 )}
               </div>
 
-              {/* Filmstrip of Attendees (Compact Thumbnails) */}
+              {/* Attendee Filmstrip */}
               <div className="h-32 flex items-center gap-3 overflow-x-auto pb-1 shrink-0">
-                {/* Local user tile in filmstrip */}
                 <div className="w-48 h-full shrink-0">
                   <VideoPlayer
                     stream={localStream}
@@ -870,7 +1017,6 @@ const MeetingRoom = () => {
                   />
                 </div>
 
-                {/* Remote peer tiles in filmstrip */}
                 {peers.map((peer) => (
                   <div key={peer.peerId} className="w-48 h-full shrink-0">
                     <VideoPlayer
@@ -888,11 +1034,8 @@ const MeetingRoom = () => {
               </div>
             </div>
           ) : (
-            /* ========================================================= */
-            /* STANDARD MULTI-PARTICIPANT GRID VIEW                      */
-            /* ========================================================= */
+            /* Standard Responsive Grid View */
             <div className={`w-full grid gap-4 ${getGridClass()}`}>
-              {/* Local Participant */}
               <div className="w-full">
                 <VideoPlayer
                   stream={localStream}
@@ -906,7 +1049,6 @@ const MeetingRoom = () => {
                 />
               </div>
 
-              {/* Remote Participants */}
               {peers.map((peer) => (
                 <div key={peer.peerId} className="w-full">
                   <VideoPlayer
@@ -958,11 +1100,22 @@ const MeetingRoom = () => {
           onToggleVideo={handleToggleVideo}
           onToggleHand={handleToggleHand}
           onToggleScreenShare={handleToggleScreenShare}
+          onOpenSettings={() => setIsSettingsOpen(true)}
           onSendReaction={handleSendReaction}
           onToggleSidebar={handleToggleSidebar}
           onLeave={handleLeave}
         />
       </footer>
+
+      {/* Device Settings Modal */}
+      <DeviceSettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        currentAudioDeviceId={currentAudioDeviceId}
+        currentVideoDeviceId={currentVideoDeviceId}
+        currentAudioOutputId={currentAudioOutputId}
+        onDeviceChange={handleDeviceChange}
+      />
     </div>
   );
 };

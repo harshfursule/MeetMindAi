@@ -11,6 +11,7 @@ import {
   Smile,
   ScreenShare,
   ScreenShareOff,
+  Settings,
 } from 'lucide-react';
 
 const EMOJI_OPTIONS = ['👍', '👏', '❤️', '😂', '🎉', '🔥', '💡', '😮'];
@@ -28,6 +29,7 @@ const ControlBar = ({
   onToggleVideo,
   onToggleHand,
   onToggleScreenShare,
+  onOpenSettings,
   onSendReaction,
   onToggleSidebar,
   onLeave,
@@ -166,6 +168,15 @@ const ControlBar = ({
             </div>
           )}
         </div>
+
+        {/* Device Settings Button */}
+        <button
+          onClick={onOpenSettings}
+          className="p-3.5 sm:p-4 rounded-2xl bg-indigo-950/60 text-indigo-300 hover:bg-indigo-900/60 hover:text-white border border-indigo-500/20 transition-all cursor-pointer shadow-md"
+          title="Audio & Video Device Settings"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
 
         {/* Leave Meeting Button */}
         <button
