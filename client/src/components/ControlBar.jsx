@@ -9,6 +9,8 @@ import {
   Users,
   Hand,
   Smile,
+  ScreenShare,
+  ScreenShareOff,
 } from 'lucide-react';
 
 const EMOJI_OPTIONS = ['👍', '👏', '❤️', '😂', '🎉', '🔥', '💡', '😮'];
@@ -17,12 +19,15 @@ const ControlBar = ({
   audioEnabled,
   videoEnabled,
   handRaised,
+  isScreenSharing = false,
+  activePresenter = null,
   unreadCount = 0,
   participantCount = 1,
   activeSidebar, // 'chat' | 'participants' | null
   onToggleAudio,
   onToggleVideo,
   onToggleHand,
+  onToggleScreenShare,
   onSendReaction,
   onToggleSidebar,
   onLeave,
@@ -53,10 +58,18 @@ const ControlBar = ({
             <span>Your hand is raised</span>
           </div>
         )}
+        {activePresenter && (
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 text-xs font-medium">
+            <ScreenShare className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="truncate max-w-[150px]">
+              {isScreenSharing ? 'You are presenting' : `${activePresenter.presenterName} is presenting`}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Center section: Core A/V & Action Controls */}
-      <div className="flex items-center justify-center gap-2.5 sm:gap-3.5 mx-auto">
+      <div className="flex items-center justify-center gap-2 sm:gap-3 mx-auto">
         {/* Mute / Unmute Audio */}
         <button
           onClick={onToggleAudio}
@@ -81,6 +94,31 @@ const ControlBar = ({
           title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
         >
           {videoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
+        </button>
+
+        {/* Screen Sharing / Presenter Switching */}
+        <button
+          onClick={onToggleScreenShare}
+          className={`p-3.5 sm:p-4 rounded-2xl transition-all cursor-pointer shadow-md ${
+            isScreenSharing
+              ? 'bg-blue-600 text-white ring-2 ring-blue-400/50 shadow-blue-500/30 scale-105'
+              : activePresenter
+              ? 'bg-indigo-900/60 text-indigo-200 hover:bg-blue-600/40 border border-indigo-500/30'
+              : 'bg-indigo-950/60 text-indigo-300 hover:bg-indigo-900/60 hover:text-white border border-indigo-500/20'
+          }`}
+          title={
+            isScreenSharing
+              ? 'Stop sharing screen'
+              : activePresenter
+              ? `Take over presentation (${activePresenter.presenterName} is currently sharing)`
+              : 'Share entire screen, window, or tab'
+          }
+        >
+          {isScreenSharing ? (
+            <ScreenShareOff className="w-5 h-5 text-white" />
+          ) : (
+            <ScreenShare className="w-5 h-5" />
+          )}
         </button>
 
         {/* Raise Hand */}

@@ -10,6 +10,12 @@ const Message = require('../models/Message');
 const rooms = new Map();
 
 /**
+ * Map of roomId -> { presenterSocketId, presenterName, presenterUserId, startedAt }
+ * Tracks active screen sharing presenter in each room.
+ */
+const roomPresenters = new Map();
+
+/**
  * Initialize Socket.io signaling server with JWT authentication.
  * Supports:
  * - Simple-peer signaling (targeted 1-to-1 mesh)
@@ -127,6 +133,7 @@ const initializeSignaling = (io) => {
           participants: existingParticipants,
           participantCount: room.size,
           messages: recentMessages,
+          currentPresenter: roomPresenters.get(roomId) || null,
         });
 
         // Send room-users count to all in room
@@ -404,6 +411,56 @@ const initializeSignaling = (io) => {
     });
 
     /**
+     * Start screen sharing / presenter switching
+     * @event start-screen-share
+     */
+    socket.on('start-screen-share', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        if (!roomId) return;
+
+        const presenterInfo = {
+          presenterSocketId: socket.id,
+          presenterName: socket.userName,
+          presenterUserId: socket.userId,
+          startedAt: Date.now(),
+        };
+
+        roomPresenters.set(roomId, presenterInfo);
+
+        // Broadcast to all participants that presenter switched / started
+        io.to(roomId).emit('presenter-changed', presenterInfo);
+
+        console.log(`[Socket] ${socket.userName} started presenting in room ${roomId}`);
+      } catch (error) {
+        console.error('[Socket] Error in start-screen-share:', error);
+      }
+    });
+
+    /**
+     * Stop screen sharing
+     * @event stop-screen-share
+     */
+    socket.on('stop-screen-share', (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        if (!roomId) return;
+
+        const currentPresenter = roomPresenters.get(roomId);
+        if (currentPresenter && currentPresenter.presenterSocketId === socket.id) {
+          roomPresenters.delete(roomId);
+          io.to(roomId).emit('presenter-stopped', {
+            presenterSocketId: socket.id,
+            presenterName: socket.userName,
+          });
+          console.log(`[Socket] ${socket.userName} stopped presenting in room ${roomId}`);
+        }
+      } catch (error) {
+        console.error('[Socket] Error in stop-screen-share:', error);
+      }
+    });
+
+    /**
      * Host removes / kicks a participant from the meeting.
      * @event kick-participant
      */
@@ -519,6 +576,16 @@ function handleLeaveRoom(socket, roomId, io) {
   const room = rooms.get(roomId);
   if (room) {
     room.delete(socket.id);
+
+    // If the leaving user was the presenter, notify the room
+    const currentPresenter = roomPresenters.get(roomId);
+    if (currentPresenter && currentPresenter.presenterSocketId === socket.id) {
+      roomPresenters.delete(roomId);
+      socket.to(roomId).emit('presenter-stopped', {
+        presenterSocketId: socket.id,
+        presenterName: socket.userName,
+      });
+    }
 
     socket.to(roomId).emit('user-left', {
       socketId: socket.id,

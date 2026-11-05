@@ -2,7 +2,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import SimplePeer from 'simple-peer';
 import toast from 'react-hot-toast';
-import { Users, Copy, Check, MessageSquare, Shield } from 'lucide-react';
+import {
+  Users,
+  Copy,
+  Check,
+  Shield,
+  ScreenShare,
+  ScreenShareOff,
+} from 'lucide-react';
 import VideoPlayer from '../components/VideoPlayer.jsx';
 import ControlBar from '../components/ControlBar.jsx';
 import MeetingSidebar from '../components/MeetingSidebar.jsx';
@@ -24,6 +31,11 @@ const MeetingRoom = () => {
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [handRaised, setHandRaised] = useState(false);
 
+  // Screen sharing & Presenter state
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [activePresenter, setActivePresenter] = useState(null); // { presenterSocketId, presenterName, presenterUserId } | null
+  const [localScreenStream, setLocalScreenStream] = useState(null);
+
   // Room & participants
   const [meetingData, setMeetingData] = useState(null);
   const [participantsList, setParticipantsList] = useState([]); // list of all participants for sidebar
@@ -42,6 +54,7 @@ const MeetingRoom = () => {
   const peersRef = useRef({}); // socketId -> { peer, userName }
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
+  const screenStreamRef = useRef(null);
 
   // Check if current user is the meeting host
   const isHost =
@@ -81,6 +94,13 @@ const MeetingRoom = () => {
 
   // Full cleanup
   const cleanup = useCallback(() => {
+    // Stop screen sharing if active
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+
+    // Destroy all peer connections
     Object.keys(peersRef.current).forEach((socketId) => {
       try {
         peersRef.current[socketId].peer.destroy();
@@ -110,10 +130,95 @@ const MeetingRoom = () => {
       socketRef.current.off('user-media-state-changed');
       socketRef.current.off('force-mute');
       socketRef.current.off('kicked-from-meeting');
+      socketRef.current.off('presenter-changed');
+      socketRef.current.off('presenter-stopped');
     }
 
     setLocalStream(null);
+    setLocalScreenStream(null);
+    setIsScreenSharing(false);
+    setActivePresenter(null);
   }, [meetingId]);
+
+  // Stop Screen Share helper
+  const stopScreenShare = useCallback(() => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+
+    // Revert WebRTC video track back to camera for all peers
+    const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
+    if (cameraTrack) {
+      Object.values(peersRef.current).forEach(({ peer }) => {
+        try {
+          const currentTrack = peer.streams?.[0]?.getVideoTracks()?.[0];
+          if (currentTrack) {
+            peer.replaceTrack(currentTrack, cameraTrack, localStreamRef.current);
+          }
+        } catch (err) {
+          console.error('[ScreenShare] Revert track error:', err);
+        }
+      });
+    }
+
+    setLocalScreenStream(null);
+    setIsScreenSharing(false);
+    socketRef.current?.emit('stop-screen-share', { meetingId });
+    toast.success('Screen sharing stopped');
+  }, [meetingId]);
+
+  // Start Screen Share / Presenter Switching
+  const startScreenShare = useCallback(async () => {
+    try {
+      // 1. Request display media from browser
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: 'always' },
+        audio: true,
+      });
+
+      const screenVideoTrack = screenStream.getVideoTracks()[0];
+      const cameraVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+
+      // Handle user stopping share via native browser floating banner
+      screenVideoTrack.onended = () => {
+        stopScreenShare();
+      };
+
+      // 2. Replace camera video track with screen track across all peers
+      if (cameraVideoTrack) {
+        Object.values(peersRef.current).forEach(({ peer }) => {
+          try {
+            peer.replaceTrack(cameraVideoTrack, screenVideoTrack, localStreamRef.current);
+          } catch (err) {
+            console.error('[ScreenShare] replaceTrack error:', err);
+          }
+        });
+      }
+
+      screenStreamRef.current = screenStream;
+      setLocalScreenStream(screenStream);
+      setIsScreenSharing(true);
+
+      // 3. Emit presenter start / switch event to room
+      socketRef.current?.emit('start-screen-share', { meetingId });
+      toast.success('You are now sharing your screen');
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') {
+        console.error('[ScreenShare] Error starting screen share:', err);
+        toast.error('Could not share screen');
+      }
+    }
+  }, [meetingId, stopScreenShare]);
+
+  // Toggle Screen Share
+  const handleToggleScreenShare = () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+    } else {
+      startScreenShare();
+    }
+  };
 
   // Create SimplePeer instance
   const createPeer = useCallback(
@@ -207,45 +312,57 @@ const MeetingRoom = () => {
           videoEnabled: true,
         });
 
-        // 4. Handle room-joined (existing participants + message history)
-        socket.on('room-joined', ({ participants, participantCount: count, messages: history }) => {
-          console.log('[Socket] Room joined. Existing participants:', participants);
-          if (count) setParticipantCount(count);
+        // 4. Handle room-joined (existing participants + message history + presenter)
+        socket.on(
+          'room-joined',
+          ({
+            participants,
+            participantCount: count,
+            messages: history,
+            currentPresenter,
+          }) => {
+            console.log('[Socket] Room joined. Existing participants:', participants);
+            if (count) setParticipantCount(count);
 
-          if (history && Array.isArray(history)) {
-            setMessages(history);
-          }
+            if (history && Array.isArray(history)) {
+              setMessages(history);
+            }
 
-          // Build participants list (including local user)
-          const localParticipant = {
-            socketId: socket.id,
-            userId: user?._id || user?.id,
-            userName: user?.name || 'You',
-            userRole: isHost ? 'host' : 'participant',
-            audioEnabled: true,
-            videoEnabled: true,
-            handRaised: false,
-            isLocal: true,
-            isHost,
-          };
+            if (currentPresenter) {
+              setActivePresenter(currentPresenter);
+            }
 
-          const remoteParticipants = (participants || []).map((p) => ({
-            ...p,
-            isLocal: false,
-            isHost: p.userRole === 'host',
-          }));
-
-          setParticipantsList([localParticipant, ...remoteParticipants]);
-
-          // Create peer connections to each existing participant
-          participants.forEach((p) => {
-            const peer = createPeer(p.socketId, true, stream, p.userName);
-            peersRef.current[p.socketId] = {
-              peer,
-              userName: p.userName || 'Participant',
+            // Build participants list (including local user)
+            const localParticipant = {
+              socketId: socket.id,
+              userId: user?._id || user?.id,
+              userName: user?.name || 'You',
+              userRole: isHost ? 'host' : 'participant',
+              audioEnabled: true,
+              videoEnabled: true,
+              handRaised: false,
+              isLocal: true,
+              isHost,
             };
-          });
-        });
+
+            const remoteParticipants = (participants || []).map((p) => ({
+              ...p,
+              isLocal: false,
+              isHost: p.userRole === 'host',
+            }));
+
+            setParticipantsList([localParticipant, ...remoteParticipants]);
+
+            // Create peer connections to each existing participant
+            participants.forEach((p) => {
+              const peer = createPeer(p.socketId, true, stream, p.userName);
+              peersRef.current[p.socketId] = {
+                peer,
+                userName: p.userName || 'Participant',
+              };
+            });
+          }
+        );
 
         // 5. When a new user joins later
         socket.on('user-joined', (participant) => {
@@ -317,7 +434,6 @@ const MeetingRoom = () => {
 
           setFloatingReactions((prev) => [...prev, newReaction]);
 
-          // Auto-remove reaction after animation completes (3s)
           setTimeout(() => {
             setFloatingReactions((prev) => prev.filter((r) => r.id !== reaction.id));
           }, 3000);
@@ -325,17 +441,14 @@ const MeetingRoom = () => {
 
         // 11. Raise / lower hand event
         socket.on('user-hand-toggled', ({ socketId, userName, isRaised }) => {
-          // If it's local user
           if (socketId === socket.id) {
             setHandRaised(isRaised);
           }
 
-          // Update in peers list
           setPeers((prev) =>
             prev.map((p) => (p.peerId === socketId ? { ...p, handRaised: isRaised } : p))
           );
 
-          // Update in sidebar participants list
           setParticipantsList((prev) =>
             prev.map((p) => (p.socketId === socketId ? { ...p, handRaised: isRaised } : p))
           );
@@ -401,10 +514,56 @@ const MeetingRoom = () => {
         });
 
         // 15. Host kicked us from meeting
-        socket.on('kicked-from-meeting', ({ kickedBy, reason }) => {
+        socket.on('kicked-from-meeting', ({ reason }) => {
           toast.error(reason || 'You have been removed from the meeting by the host.');
           cleanup();
           navigate('/dashboard');
+        });
+
+        // 16. Screen Share / Presenter Switched
+        socket.on('presenter-changed', (presenterInfo) => {
+          console.log('[Socket] Presenter changed:', presenterInfo);
+          setActivePresenter(presenterInfo);
+
+          // If another participant took over presenter while we were sharing, stop our share
+          if (
+            screenStreamRef.current &&
+            presenterInfo.presenterSocketId !== socket.id
+          ) {
+            screenStreamRef.current.getTracks().forEach((track) => track.stop());
+            screenStreamRef.current = null;
+            setLocalScreenStream(null);
+            setIsScreenSharing(false);
+
+            // Revert track
+            const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
+            if (cameraTrack) {
+              Object.values(peersRef.current).forEach(({ peer }) => {
+                try {
+                  const currentTrack = peer.streams?.[0]?.getVideoTracks()?.[0];
+                  if (currentTrack) {
+                    peer.replaceTrack(currentTrack, cameraTrack, localStreamRef.current);
+                  }
+                } catch (e) {
+                  console.error(e);
+                }
+              });
+            }
+
+            toast(`${presenterInfo.presenterName} took over screen sharing`, {
+              icon: '🖥️',
+            });
+          } else if (presenterInfo.presenterSocketId !== socket.id) {
+            toast(`${presenterInfo.presenterName} is sharing their screen`, {
+              icon: '🖥️',
+            });
+          }
+        });
+
+        // 17. Presenter Stopped
+        socket.on('presenter-stopped', ({ presenterName }) => {
+          console.log('[Socket] Presenter stopped:', presenterName);
+          setActivePresenter(null);
         });
       } catch (err) {
         console.error('[MeetingRoom] Init error:', err);
@@ -541,7 +700,7 @@ const MeetingRoom = () => {
     } else {
       setActiveSidebar(tab);
       if (tab === 'chat') {
-        setUnreadCount(0); // clear unread count on opening chat
+        setUnreadCount(0);
       }
     }
   };
@@ -561,7 +720,20 @@ const MeetingRoom = () => {
     navigate('/dashboard');
   };
 
-  // Dynamic grid class based on total videos
+  // Find the presenter's stream
+  const isLocalPresenter =
+    isScreenSharing ||
+    (activePresenter && activePresenter.presenterSocketId === socketRef.current?.id);
+
+  const presenterPeer = activePresenter
+    ? peers.find((p) => p.peerId === activePresenter.presenterSocketId)
+    : null;
+
+  const presenterStream = isLocalPresenter
+    ? localScreenStream || localStream
+    : presenterPeer?.stream;
+
+  // Determine standard grid columns when no screen is being shared
   const totalStreams = peers.length + 1;
   const getGridClass = () => {
     if (totalStreams === 1) return 'grid-cols-1 max-w-4xl mx-auto';
@@ -589,7 +761,7 @@ const MeetingRoom = () => {
         ))}
       </div>
 
-      {/* Top Bar */}
+      {/* Top Navigation Bar */}
       <header className="flex items-center justify-between px-6 py-3 glass z-10 border-b border-indigo-500/10">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
@@ -615,6 +787,17 @@ const MeetingRoom = () => {
         </div>
 
         <div className="flex items-center gap-3 text-sm text-indigo-300">
+          {activePresenter && (
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-300 text-xs font-semibold animate-pulse">
+              <ScreenShare className="w-3.5 h-3.5" />
+              <span>
+                {isLocalPresenter
+                  ? 'You are presenting'
+                  : `${activePresenter.presenterName} is presenting`}
+              </span>
+            </div>
+          )}
+
           <button
             onClick={() => handleToggleSidebar('participants')}
             className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-900/30 hover:bg-indigo-900/50 border border-indigo-500/20 transition-all cursor-pointer"
@@ -625,50 +808,121 @@ const MeetingRoom = () => {
               {participantCount === 1 ? 'participant' : 'participants'}
             </span>
           </button>
-
-          {peers.length > 0 && (
-            <span className="hidden md:inline-flex px-2.5 py-0.5 rounded-full bg-green-500/20 text-green-400 text-xs font-medium border border-green-500/30">
-              Live Mesh Connected
-            </span>
-          )}
         </div>
       </header>
 
-      {/* Main Stage (Video Grid + Collapsible Sidebar) */}
+      {/* Main Stage (Screen Share Spotlight View OR Standard Responsive Grid) */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Video Grid */}
-        <main className="flex-1 p-4 md:p-6 overflow-y-auto flex items-center justify-center">
-          <div className={`w-full grid gap-4 ${getGridClass()}`}>
-            {/* Local Video Card */}
-            <div className="w-full">
-              <VideoPlayer
-                stream={localStream}
-                muted={true}
-                label={user?.name || 'You'}
-                isLocal={true}
-                videoEnabled={videoEnabled}
-                audioEnabled={audioEnabled}
-                handRaised={handRaised}
-                isHost={isHost}
-              />
-            </div>
+        <main className="flex-1 p-3 md:p-5 overflow-y-auto flex flex-col justify-center">
+          {activePresenter && presenterStream ? (
+            /* ========================================================= */
+            /* OPTIMIZED SCREEN SHARING HERO VIEW WITH FILMSTRIP (MODULE 5) */
+            /* ========================================================= */
+            <div className="h-full flex flex-col gap-3">
+              {/* Primary Screen Share Stage (Hero) */}
+              <div className="flex-1 relative rounded-2xl overflow-hidden bg-black/90 border border-blue-500/30 shadow-2xl flex items-center justify-center group min-h-[350px]">
+                <video
+                  autoPlay
+                  playsInline
+                  muted={isLocalPresenter}
+                  ref={(videoEl) => {
+                    if (videoEl && presenterStream) {
+                      videoEl.srcObject = presenterStream;
+                    }
+                  }}
+                  className="w-full h-full object-contain"
+                />
 
-            {/* Remote Peer Video Cards */}
-            {peers.map((peer) => (
-              <div key={peer.peerId} className="w-full">
+                {/* Presenter Banner Overlay */}
+                <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-gray-950/80 backdrop-blur-md border border-white/10 text-xs font-medium text-white shadow-lg">
+                  <ScreenShare className="w-4 h-4 text-blue-400" />
+                  <span>
+                    {isLocalPresenter ? 'Your Screen' : `${activePresenter.presenterName}'s Screen`}
+                  </span>
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse ml-1" />
+                </div>
+
+                {/* Quick Stop Sharing Button for Local Presenter */}
+                {isLocalPresenter && (
+                  <button
+                    onClick={stopScreenShare}
+                    className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/90 hover:bg-red-600 text-white text-xs font-semibold backdrop-blur-md shadow-lg transition-all cursor-pointer"
+                  >
+                    <ScreenShareOff className="w-4 h-4" />
+                    <span>Stop Sharing</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Filmstrip of Attendees (Compact Thumbnails) */}
+              <div className="h-32 flex items-center gap-3 overflow-x-auto pb-1 shrink-0">
+                {/* Local user tile in filmstrip */}
+                <div className="w-48 h-full shrink-0">
+                  <VideoPlayer
+                    stream={localStream}
+                    muted={true}
+                    label={user?.name || 'You'}
+                    isLocal={true}
+                    videoEnabled={videoEnabled}
+                    audioEnabled={audioEnabled}
+                    handRaised={handRaised}
+                    isHost={isHost}
+                  />
+                </div>
+
+                {/* Remote peer tiles in filmstrip */}
+                {peers.map((peer) => (
+                  <div key={peer.peerId} className="w-48 h-full shrink-0">
+                    <VideoPlayer
+                      stream={peer.stream}
+                      muted={false}
+                      label={peer.userName}
+                      isLocal={false}
+                      videoEnabled={peer.videoEnabled !== false}
+                      audioEnabled={peer.audioEnabled !== false}
+                      handRaised={peer.handRaised}
+                      isHost={false}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* ========================================================= */
+            /* STANDARD MULTI-PARTICIPANT GRID VIEW                      */
+            /* ========================================================= */
+            <div className={`w-full grid gap-4 ${getGridClass()}`}>
+              {/* Local Participant */}
+              <div className="w-full">
                 <VideoPlayer
-                  stream={peer.stream}
-                  muted={false}
-                  label={peer.userName}
-                  isLocal={false}
-                  videoEnabled={peer.videoEnabled !== false}
-                  audioEnabled={peer.audioEnabled !== false}
-                  handRaised={peer.handRaised}
-                  isHost={false}
+                  stream={localStream}
+                  muted={true}
+                  label={user?.name || 'You'}
+                  isLocal={true}
+                  videoEnabled={videoEnabled}
+                  audioEnabled={audioEnabled}
+                  handRaised={handRaised}
+                  isHost={isHost}
                 />
               </div>
-            ))}
-          </div>
+
+              {/* Remote Participants */}
+              {peers.map((peer) => (
+                <div key={peer.peerId} className="w-full">
+                  <VideoPlayer
+                    stream={peer.stream}
+                    muted={false}
+                    label={peer.userName}
+                    isLocal={false}
+                    videoEnabled={peer.videoEnabled !== false}
+                    audioEnabled={peer.audioEnabled !== false}
+                    handRaised={peer.handRaised}
+                    isHost={false}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </main>
 
         {/* Slide-over Sidebar: Chat & Participants */}
@@ -689,18 +943,21 @@ const MeetingRoom = () => {
         )}
       </div>
 
-      {/* Floating Control Bar */}
+      {/* Floating Bottom Control Bar */}
       <footer className="glass border-t border-indigo-500/10 z-10">
         <ControlBar
           audioEnabled={audioEnabled}
           videoEnabled={videoEnabled}
           handRaised={handRaised}
+          isScreenSharing={isScreenSharing}
+          activePresenter={activePresenter}
           unreadCount={unreadCount}
           participantCount={participantCount}
           activeSidebar={activeSidebar}
           onToggleAudio={handleToggleAudio}
           onToggleVideo={handleToggleVideo}
           onToggleHand={handleToggleHand}
+          onToggleScreenShare={handleToggleScreenShare}
           onSendReaction={handleSendReaction}
           onToggleSidebar={handleToggleSidebar}
           onLeave={handleLeave}
