@@ -12,6 +12,7 @@ import {
   ScreenShare,
   ScreenShareOff,
   Settings,
+  Subtitles,
 } from 'lucide-react';
 
 const EMOJI_OPTIONS = ['👍', '👏', '❤️', '😂', '🎉', '🔥', '💡', '😮'];
@@ -20,6 +21,7 @@ const ControlBar = ({
   audioEnabled,
   videoEnabled,
   handRaised,
+  captionsEnabled = false,
   isScreenSharing = false,
   activePresenter = null,
   unreadCount = 0,
@@ -28,6 +30,7 @@ const ControlBar = ({
   onToggleAudio,
   onToggleVideo,
   onToggleHand,
+  onToggleCaptions,
   onToggleScreenShare,
   onOpenSettings,
   onSendReaction,
@@ -168,6 +171,21 @@ const ControlBar = ({
             </div>
           )}
         </div>
+
+        {/* Closed Captions / Live Speech-to-Text */}
+        {onToggleCaptions && (
+          <button
+            onClick={onToggleCaptions}
+            className={`p-3.5 sm:p-4 rounded-2xl transition-all cursor-pointer shadow-md ${
+              captionsEnabled
+                ? 'bg-indigo-600 text-white ring-2 ring-indigo-400/50 shadow-indigo-500/30'
+                : 'bg-indigo-950/60 text-indigo-300 hover:bg-indigo-900/60 hover:text-white border border-indigo-500/20'
+            }`}
+            title={captionsEnabled ? 'Turn off live captions (C)' : 'Turn on live captions (C)'}
+          >
+            <Subtitles className="w-5 h-5" />
+          </button>
+        )}
 
         {/* Device Settings Button */}
         <button

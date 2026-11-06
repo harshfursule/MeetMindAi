@@ -104,8 +104,8 @@ after(async () => {
   if (participantUser?._id) await User.findByIdAndDelete(participantUser._id).catch(() => {});
   if (bystanderUser?._id) await User.findByIdAndDelete(bystanderUser._id).catch(() => {});
 
+  if (io) io.close();
   await new Promise((resolve) => server.close(resolve));
-  await mongoose.connection.close();
 });
 
 describe('6. Advanced Collaboration & Host Privileges Tests', () => {

@@ -13,6 +13,7 @@ dotenv.config();
 const connectDB = require('./config/db');
 const authRoutes = require('./routes/auth');
 const meetingRoutes = require('./routes/meetings');
+const summaryRoutes = require('./routes/summaries');
 const { router: webrtcRoutes } = require('./routes/webrtc');
 const { initializeSignaling } = require('./socket/signaling');
 
@@ -102,6 +103,7 @@ app.get('/api/health', (req, res) => {
 // API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/meetings', meetingRoutes);
+app.use('/api/summaries', summaryRoutes);
 app.use('/api/webrtc', webrtcRoutes);
 
 // ==========================================

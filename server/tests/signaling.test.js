@@ -66,8 +66,8 @@ after(async () => {
   if (testUser1?._id) await User.findByIdAndDelete(testUser1._id).catch(() => {});
   if (testUser2?._id) await User.findByIdAndDelete(testUser2._id).catch(() => {});
 
+  if (io) io.close();
   await new Promise((resolve) => server.close(resolve));
-  await mongoose.connection.close();
 });
 
 describe('5. Real-Time Socket.io Signaling & Collaboration Tests', () => {

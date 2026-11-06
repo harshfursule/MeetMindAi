@@ -483,4 +483,11 @@ router.get('/:id/messages', async (req, res) => {
   }
 });
 
+// Transcript & Summary sub-routes
+const transcriptRoutes = require('./transcripts');
+const summaryRoutes = require('./summaries');
+
+router.use('/:id/transcript', transcriptRoutes);
+router.use('/:id', summaryRoutes);
+
 module.exports = router;

@@ -1,7 +1,11 @@
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const User = require('../models/User');
+const Meeting = require('../models/Meeting');
 const Message = require('../models/Message');
+const Transcript = require('../models/Transcript');
+const Summary = require('../models/Summary');
+const { generateMeetingSummary } = require('../services/summarizer');
 const { getIceServers } = require('../routes/webrtc');
 
 /**
@@ -482,6 +486,140 @@ const initializeSignaling = (io) => {
         }
       } catch (error) {
         console.error('[Socket] Error in kick-participant:', error);
+      }
+    });
+
+    /**
+     * Real-time Speech-to-Text Live Caption & Transcript Persistence
+     * @event send-caption
+     * @param {Object} data - { roomId: string, text: string, isFinal?: boolean, confidence?: number, timestamp?: Date }
+     */
+    socket.on('send-caption', async (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        const { text, isFinal, confidence } = data;
+        if (!roomId || !text || !text.trim()) return;
+
+        const captionData = {
+          speakerId: socket.userId,
+          speakerName: socket.userName,
+          text: text.trim(),
+          isFinal: isFinal !== false,
+          confidence: confidence !== undefined ? confidence : 1.0,
+          timestamp: data.timestamp ? new Date(data.timestamp) : new Date(),
+        };
+
+        // Broadcast to all participants in room immediately
+        io.to(roomId).emit('caption-received', captionData);
+
+        // If this is a completed phrase/utterance, persist to MongoDB
+        if (captionData.isFinal) {
+          let meeting = null;
+          if (mongoose.Types.ObjectId.isValid(roomId)) {
+            meeting = await Meeting.findById(roomId);
+          }
+          if (!meeting) {
+            meeting = await Meeting.findOne({ roomId });
+          }
+
+          const meetingId = meeting ? meeting._id : null;
+          let transcript = await Transcript.findOne({
+            $or: [
+              ...(meetingId ? [{ meetingId }] : []),
+              { roomId },
+            ],
+          });
+
+          if (!transcript) {
+            transcript = new Transcript({
+              meetingId: meetingId || new mongoose.Types.ObjectId(),
+              roomId,
+              entries: [],
+            });
+          }
+
+          transcript.entries.push({
+            speakerId: socket.userId,
+            speakerName: socket.userName,
+            text: captionData.text,
+            timestamp: captionData.timestamp,
+            confidence: captionData.confidence,
+            isFinal: true,
+          });
+
+          await transcript.save();
+        }
+      } catch (error) {
+        console.error('[Socket] Error handling send-caption:', error.message);
+      }
+    });
+
+    /**
+     * On-demand AI meeting summarization request over Socket
+     * @event request-summary
+     */
+    socket.on('request-summary', async (data) => {
+      try {
+        const roomId = data.roomId || data.meetingId;
+        if (!roomId) return;
+
+        let meeting = null;
+        if (mongoose.Types.ObjectId.isValid(roomId)) {
+          meeting = await Meeting.findById(roomId);
+        }
+        if (!meeting) {
+          meeting = await Meeting.findOne({ roomId });
+        }
+
+        const meetingId = meeting ? meeting._id : null;
+        const transcript = await Transcript.findOne({
+          $or: [
+            ...(meetingId ? [{ meetingId }] : []),
+            { roomId },
+          ],
+        });
+
+        const entries = transcript ? transcript.entries : [];
+        const summaryData = await generateMeetingSummary(entries, meeting ? meeting.title : 'Meeting');
+
+        let summary = await Summary.findOne({
+          $or: [
+            ...(meetingId ? [{ meetingId }] : []),
+            { roomId },
+          ],
+        });
+
+        if (summary) {
+          summary.title = meeting ? meeting.title : 'Meeting';
+          summary.overview = summaryData.overview;
+          summary.keyPoints = summaryData.keyPoints;
+          summary.actionItems = summaryData.actionItems;
+          summary.topics = summaryData.topics;
+          summary.sentiment = summaryData.sentiment;
+          summary.generatedBy = summaryData.generatedBy;
+        } else {
+          summary = new Summary({
+            meetingId: meetingId || new mongoose.Types.ObjectId(),
+            roomId,
+            title: meeting ? meeting.title : 'Meeting',
+            overview: summaryData.overview,
+            keyPoints: summaryData.keyPoints,
+            actionItems: summaryData.actionItems,
+            topics: summaryData.topics,
+            sentiment: summaryData.sentiment,
+            generatedBy: summaryData.generatedBy,
+          });
+        }
+
+        await summary.save();
+
+        io.to(roomId).emit('summary-generated', {
+          summary,
+          message: 'AI Meeting Summary generated successfully.',
+        });
+      } catch (error) {
+        console.error('[Socket] Error handling request-summary:', error.message);
+        socket.emit('summary-error', { message: 'Failed to generate summary: ' + error.message });
       }
     });
 

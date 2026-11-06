@@ -12,11 +12,15 @@ import {
   ScreenShareOff,
   WifiOff,
   RotateCcw,
+  Sparkles,
+  FileText,
 } from 'lucide-react';
 import VideoPlayer from '../components/VideoPlayer.jsx';
 import ControlBar from '../components/ControlBar.jsx';
 import MeetingSidebar from '../components/MeetingSidebar.jsx';
 import DeviceSettingsModal from '../components/DeviceSettingsModal.jsx';
+import LiveCaptionsOverlay from '../components/LiveCaptionsOverlay.jsx';
+import SpeechToTextService from '../services/speechRecognition.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { getSocket } from '../services/socket.js';
 import api from '../services/api.js';
@@ -34,6 +38,8 @@ const MeetingRoom = () => {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [handRaised, setHandRaised] = useState(false);
+  const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  const [currentCaption, setCurrentCaption] = useState(null);
 
   // Device Selection
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -69,6 +75,7 @@ const MeetingRoom = () => {
   const socketRef = useRef(null);
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
+  const speechServiceRef = useRef(null);
   const iceServersRef = useRef([
     {
       urls: [
@@ -181,6 +188,12 @@ const MeetingRoom = () => {
       socketRef.current.off('kicked-from-meeting');
       socketRef.current.off('presenter-changed');
       socketRef.current.off('presenter-stopped');
+      socketRef.current.off('caption-received');
+    }
+
+    if (speechServiceRef.current) {
+      speechServiceRef.current.destroy();
+      speechServiceRef.current = null;
     }
 
     setLocalStream(null);
@@ -423,6 +436,37 @@ const MeetingRoom = () => {
       }
     }, 1500);
   }, [meetingId, user, audioEnabled, videoEnabled]);
+
+  // Real-Time Speech Recognition & Live Caption Broadcasting
+  useEffect(() => {
+    if (!speechServiceRef.current) {
+      const stt = new SpeechToTextService();
+      stt.onCaption((captionData) => {
+        // Send caption chunk to everyone in the room over Socket
+        socketRef.current?.emit('send-caption', {
+          roomId: meetingId,
+          text: captionData.text,
+          isFinal: captionData.isFinal,
+          confidence: captionData.confidence,
+          timestamp: captionData.timestamp,
+        });
+
+        // Display locally immediately (< 100ms)
+        setCurrentCaption({
+          speakerName: user?.name || 'You',
+          ...captionData,
+        });
+      });
+
+      speechServiceRef.current = stt;
+    }
+
+    if (captionsEnabled && audioEnabled) {
+      speechServiceRef.current.start();
+    } else {
+      speechServiceRef.current.stop();
+    }
+  }, [captionsEnabled, audioEnabled, meetingId, user]);
 
   // Main lifecycle: media, socket, chat, participant controls, reconnection
   useEffect(() => {
@@ -709,6 +753,11 @@ const MeetingRoom = () => {
         socket.on('presenter-stopped', () => {
           setActivePresenter(null);
         });
+
+        // 18. Live Speech-to-Text Caption Received
+        socket.on('caption-received', (captionData) => {
+          setCurrentCaption(captionData);
+        });
       } catch (err) {
         console.error('[MeetingRoom] Init error:', err);
         if (err.name === 'NotAllowedError' || err.name === 'NotFoundError') {
@@ -888,8 +937,8 @@ const MeetingRoom = () => {
   // Leave meeting
   const handleLeave = () => {
     cleanup();
-    toast.success('You left the meeting');
-    navigate('/dashboard');
+    toast.success('Meeting ended. Viewing summary & notes.');
+    navigate(`/meeting/${meetingId}/details`);
   };
 
   // Presenter stream lookup
@@ -995,6 +1044,15 @@ const MeetingRoom = () => {
               </span>
             </div>
           )}
+
+          <button
+            onClick={() => window.open(`/meeting/${meetingId}/details`, '_blank')}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-gradient-to-r from-indigo-600/30 to-purple-600/30 hover:from-indigo-600/50 hover:to-purple-600/50 border border-indigo-400/30 text-xs font-semibold text-indigo-200 transition-all cursor-pointer shadow-sm"
+            title="Open Live Transcript & AI Summary in new tab"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>AI Notes</span>
+          </button>
 
           <button
             onClick={() => handleToggleSidebar('participants')}
@@ -1130,12 +1188,20 @@ const MeetingRoom = () => {
         )}
       </div>
 
+      {/* Live Speech-to-Text Captions Overlay */}
+      <LiveCaptionsOverlay
+        caption={currentCaption}
+        isEnabled={captionsEnabled}
+        onClose={() => setCaptionsEnabled(false)}
+      />
+
       {/* Floating Bottom Control Bar */}
       <footer className="glass border-t border-indigo-500/10 z-10">
         <ControlBar
           audioEnabled={audioEnabled}
           videoEnabled={videoEnabled}
           handRaised={handRaised}
+          captionsEnabled={captionsEnabled}
           isScreenSharing={isScreenSharing}
           activePresenter={activePresenter}
           unreadCount={unreadCount}
@@ -1144,6 +1210,7 @@ const MeetingRoom = () => {
           onToggleAudio={handleToggleAudio}
           onToggleVideo={handleToggleVideo}
           onToggleHand={handleToggleHand}
+          onToggleCaptions={() => setCaptionsEnabled((prev) => !prev)}
           onToggleScreenShare={handleToggleScreenShare}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onSendReaction={handleSendReaction}

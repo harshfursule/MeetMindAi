@@ -1,4 +1,5 @@
-import { Calendar, Users, ExternalLink, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Calendar, Users, ExternalLink, Trash2, Sparkles } from 'lucide-react';
 
 const MeetingCard = ({ meeting, onJoin, onDelete }) => {
   const formattedDate = meeting.createdAt
@@ -50,11 +51,19 @@ const MeetingCard = ({ meeting, onJoin, onDelete }) => {
       <div className="flex items-center gap-2">
         <button
           onClick={() => onJoin(meeting._id)}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-sm font-medium transition-all cursor-pointer"
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold transition-all cursor-pointer shadow-md"
         >
-          <ExternalLink className="w-4 h-4" />
-          Join Meeting
+          <ExternalLink className="w-3.5 h-3.5" />
+          Join
         </button>
+
+        <Link
+          to={`/meeting/${meeting._id}/details`}
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-500/20 text-indigo-300 hover:text-white text-xs font-semibold transition-all"
+        >
+          <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
+          Notes & AI
+        </Link>
       </div>
 
       <div className="mt-3 pt-3 border-t border-indigo-500/10">

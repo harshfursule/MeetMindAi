@@ -60,7 +60,6 @@ after(async () => {
   }
 
   await new Promise((resolve) => server.close(resolve));
-  await mongoose.connection.close();
 });
 
 describe('1. Health Check Smoke Test', () => {
