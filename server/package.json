@@ -5,9 +5,15 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test tests/*.test.js"
   },
-  "keywords": ["video-conferencing", "webrtc", "socket.io", "ai"],
+  "keywords": [
+    "video-conferencing",
+    "webrtc",
+    "socket.io",
+    "ai"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -22,5 +28,8 @@
     "morgan": "^1.10.0",
     "socket.io": "^4.7.5",
     "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
   }
 }

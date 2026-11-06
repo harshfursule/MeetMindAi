@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { Video, Mail, Lock, LogIn } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -10,8 +10,7 @@ const Login = () => {
 
   // Redirect if already logged in
   if (isAuthenticated) {
-    window.location.href = '/dashboard';
-    return null;
+    return <Navigate to="/dashboard" replace />;
   }
 
   const handleSubmit = async (e) => {

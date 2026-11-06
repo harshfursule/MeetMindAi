@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { UserCircle, MicOff, Crown } from 'lucide-react';
+import { MicOff, Crown } from 'lucide-react';
 
 const VideoPlayer = ({
   stream,

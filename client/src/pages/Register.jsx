@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, Navigate } from 'react-router-dom';
 import { Video, Mail, Lock, User, UserPlus } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const Register = () => {
@@ -12,14 +13,12 @@ const Register = () => {
 
   // Redirect if already logged in
   if (isAuthenticated) {
-    window.location.href = '/dashboard';
-    return null;
+    return <Navigate to="/dashboard" replace />;
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (password !== confirmPassword) {
-      const toast = (await import('react-hot-toast')).default;
       toast.error('Passwords do not match');
       return;
     }

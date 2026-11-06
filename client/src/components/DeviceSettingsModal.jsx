@@ -5,11 +5,8 @@ import {
   Video,
   Volume2,
   Check,
-  RefreshCw,
   Sliders,
-  Settings,
   ShieldCheck,
-  Globe,
 } from 'lucide-react';
 
 const DeviceSettingsModal = ({
@@ -32,7 +29,6 @@ const DeviceSettingsModal = ({
 
   // Live test preview states
   const [micLevel, setMicLevel] = useState(0);
-  const [previewStream, setPreviewStream] = useState(null);
   const [isPlayingTestSound, setIsPlayingTestSound] = useState(false);
 
   const previewVideoRef = useRef(null);

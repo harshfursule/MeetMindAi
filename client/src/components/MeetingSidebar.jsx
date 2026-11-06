@@ -28,17 +28,11 @@ const MeetingSidebar = ({
   onKickParticipant,
   onLowerHand,
 }) => {
-  const [tab, setTab] = useState(activeTab || 'chat');
+  const [internalTab, setInternalTab] = useState(null);
+  const tab = internalTab || activeTab || 'chat';
   const [inputText, setInputText] = useState('');
   const [selectedRecipient, setSelectedRecipient] = useState('everyone'); // 'everyone' | socketId
   const messagesEndRef = useRef(null);
-
-  // Sync tab state if parent switches it
-  useEffect(() => {
-    if (activeTab) {
-      setTab(activeTab);
-    }
-  }, [activeTab]);
 
   // Scroll to bottom when new messages arrive
   useEffect(() => {
@@ -86,7 +80,7 @@ const MeetingSidebar = ({
       <div className="flex items-center justify-between px-4 py-3 border-b border-indigo-500/10">
         <div className="flex gap-2 p-1 rounded-xl bg-indigo-950/40 border border-indigo-500/20">
           <button
-            onClick={() => setTab('chat')}
+            onClick={() => setInternalTab('chat')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
               tab === 'chat'
                 ? 'bg-indigo-600 text-white shadow-sm'
@@ -97,7 +91,7 @@ const MeetingSidebar = ({
             <span>Chat</span>
           </button>
           <button
-            onClick={() => setTab('participants')}
+            onClick={() => setInternalTab('participants')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all cursor-pointer ${
               tab === 'participants'
                 ? 'bg-indigo-600 text-white shadow-sm'

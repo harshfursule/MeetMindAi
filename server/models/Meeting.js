@@ -81,7 +81,6 @@ const MeetingSchema = new mongoose.Schema(
 
 // Index for efficient querying
 MeetingSchema.index({ hostId: 1, status: 1 });
-MeetingSchema.index({ roomId: 1 });
 MeetingSchema.index({ 'participants.userId': 1 });
 MeetingSchema.index({ scheduledAt: 1 });
 

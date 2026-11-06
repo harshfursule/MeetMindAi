@@ -15,11 +15,6 @@ const Dashboard = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newMeeting, setNewMeeting] = useState({ title: '', description: '' });
 
-  // Fetch meetings on mount
-  useEffect(() => {
-    fetchMeetings();
-  }, []);
-
   const fetchMeetings = async () => {
     setLoading(true);
     try {
@@ -32,6 +27,11 @@ const Dashboard = () => {
       setLoading(false);
     }
   };
+
+  // Fetch meetings on mount
+  useEffect(() => {
+    fetchMeetings();
+  }, []);
 
   const handleCreateMeeting = async (e) => {
     e.preventDefault();

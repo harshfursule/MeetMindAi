@@ -10,7 +10,6 @@ const MessageSchema = new mongoose.Schema(
     roomId: {
       type: String,
       required: true,
-      index: true,
     },
     senderId: {
       type: mongoose.Schema.Types.ObjectId,

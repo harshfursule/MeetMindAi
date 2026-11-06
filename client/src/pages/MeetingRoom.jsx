@@ -12,7 +12,6 @@ import {
   ScreenShareOff,
   WifiOff,
   RotateCcw,
-  Sliders,
 } from 'lucide-react';
 import VideoPlayer from '../components/VideoPlayer.jsx';
 import ControlBar from '../components/ControlBar.jsx';
@@ -778,6 +777,37 @@ const MeetingRoom = () => {
     }
   };
 
+  // Raise / Lower Hand toggle
+  const handleToggleHand = () => {
+    const nextState = !handRaised;
+    setHandRaised(nextState);
+
+    socketRef.current?.emit('toggle-raise-hand', {
+      meetingId,
+      isRaised: nextState,
+    });
+
+    setParticipantsList((prev) =>
+      prev.map((p) => (p.isLocal ? { ...p, handRaised: nextState } : p))
+    );
+
+    if (nextState) {
+      toast.success('You raised your hand');
+    }
+  };
+
+  // Toggle sidebar panel
+  const handleToggleSidebar = (tab) => {
+    if (activeSidebar === tab) {
+      setActiveSidebar(null);
+    } else {
+      setActiveSidebar(tab);
+      if (tab === 'chat') {
+        setUnreadCount(0);
+      }
+    }
+  };
+
   // Keyboard Shortcuts: M (Mute), V (Video), H (Hand), C (Chat), P (Participants)
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -806,26 +836,7 @@ const MeetingRoom = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [audioEnabled, videoEnabled, handRaised]);
-
-  // Raise / Lower Hand toggle
-  const handleToggleHand = () => {
-    const nextState = !handRaised;
-    setHandRaised(nextState);
-
-    socketRef.current?.emit('toggle-raise-hand', {
-      meetingId,
-      isRaised: nextState,
-    });
-
-    setParticipantsList((prev) =>
-      prev.map((p) => (p.isLocal ? { ...p, handRaised: nextState } : p))
-    );
-
-    if (nextState) {
-      toast.success('You raised your hand');
-    }
-  };
+  }, [audioEnabled, videoEnabled, handRaised, activeSidebar]);
 
   // Send emoji reaction
   const handleSendReaction = (emoji) => {
@@ -864,18 +875,6 @@ const MeetingRoom = () => {
   // Host: Lower participant hand
   const handleLowerHand = (targetSocketId) => {
     socketRef.current?.emit('lower-hand', { meetingId, targetSocketId });
-  };
-
-  // Toggle sidebar panel
-  const handleToggleSidebar = (tab) => {
-    if (activeSidebar === tab) {
-      setActiveSidebar(null);
-    } else {
-      setActiveSidebar(tab);
-      if (tab === 'chat') {
-        setUnreadCount(0);
-      }
-    }
   };
 
   // Copy Meeting ID
